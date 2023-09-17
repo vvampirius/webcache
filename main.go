@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-const VERSION = `0.1`
+const VERSION = `0.2`
 
 var (
 	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
@@ -63,6 +63,10 @@ func main() {
 	} else {
 		fmt.Println(`Warning! Passwords file not specified! Running in insecure mode.`)
 		insecure = true
+	}
+
+	if err := ScheduleCacheRemove(storagePath); err != nil {
+		os.Exit(1)
 	}
 
 	core := NewCore(storagePath, auth, insecure)

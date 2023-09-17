@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path"
+	"regexp"
+	"time"
 )
 
 type Cache struct {
@@ -15,11 +17,12 @@ type Cache struct {
 	metaPath           string
 	writeFd            io.WriteCloser
 	readFd             io.ReadCloser
-	Url                string `json:"url"`
-	WriteInProgressPid int    `json:"write_in_progress_pid"`
-	Username           string `json:"username"`
-	ContentType        string `json:"content-type"`
-	ContentDisposition string `json:"content-disposition"`
+	Url                string    `json:"url"`
+	WriteInProgressPid int       `json:"write_in_progress_pid"`
+	Username           string    `json:"username"`
+	ContentType        string    `json:"content-type"`
+	ContentDisposition string    `json:"content-disposition"`
+	Ttl                time.Time `json:"ttl"`
 }
 
 func (cache *Cache) IsMetaExist() bool {
@@ -123,6 +126,7 @@ func (cache *Cache) Size() int64 {
 }
 
 func (cache *Cache) Remove() error {
+	DebugLog.Println(`Removing`, cache)
 	cache.Close()
 	var err error
 	if err1 := os.Remove(cache.filePath); err1 != nil {
@@ -136,6 +140,20 @@ func (cache *Cache) Remove() error {
 	return err
 }
 
+func (cache *Cache) SetTTL(s string) error {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		ErrorLog.Println(err.Error())
+		return err
+	}
+	cache.Ttl = time.Now().Add(d)
+	go func() {
+		<-time.After(d)
+		cache.Remove()
+	}()
+	return nil
+}
+
 func NewCache(storagePath string, url string) (*Cache, error) {
 	hash := md5.Sum([]byte(url))
 	urlMd5 := hex.EncodeToString(hash[:])
@@ -147,4 +165,37 @@ func NewCache(storagePath string, url string) (*Cache, error) {
 		return nil, err
 	}
 	return &cache, nil
+}
+
+func ScheduleCacheRemove(storagePath string) error {
+	entries, err := os.ReadDir(storagePath)
+	if err != nil {
+		ErrorLog.Println(err.Error())
+		return err
+	}
+	r := regexp.MustCompile(`\.json$`)
+	for _, entry := range entries {
+		fileName := entry.Name()
+		if r.MatchString(fileName) {
+			cache := Cache{
+				metaPath: path.Join(storagePath, fileName),
+				filePath: path.Join(storagePath, r.ReplaceAllString(fileName, `.file`)),
+			}
+			if err := cache.Load(); err != nil {
+				continue
+			}
+			if cache.Ttl.IsZero() {
+				continue
+			}
+			if cache.Ttl.Before(time.Now()) {
+				cache.Remove()
+			}
+			d := cache.Ttl.Sub(time.Now())
+			go func() {
+				<-time.After(d)
+				cache.Remove()
+			}()
+		}
+	}
+	return nil
 }

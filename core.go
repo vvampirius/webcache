@@ -58,7 +58,6 @@ func (core *Core) MainHttpHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		cache, err := core.GetCache(cacheUrl)
 		defer cache.Close()
-		DebugLog.Println(cache, err)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -77,6 +76,12 @@ func (core *Core) MainHttpHandler(w http.ResponseWriter, r *http.Request) {
 			cache.Url = cacheUrl
 			cache.WriteInProgressPid = os.Getpid()
 			cache.Username = username
+			if ttl := r.URL.Query().Get(`ttl`); ttl != `` {
+				if err := cache.SetTTL(ttl); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+			}
 			if err := cache.Save(); err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
