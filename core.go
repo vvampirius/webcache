@@ -43,6 +43,69 @@ func (core *Core) GetCache(url string) (*Cache, error) {
 	return cache, nil
 }
 
+func (core *Core) GetBackgroundHttpHandler(w http.ResponseWriter, r *http.Request, username, cacheUrl string, cache *Cache) {
+	if username == `` && core.Insecure == false {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprintln(w, `Not authorized`)
+		return
+	}
+	switch cache.State() {
+	case CacheStateNotExist:
+		cache.Url = cacheUrl
+		cache.WriteInProgressPid = os.Getpid()
+		cache.Username = username
+		if ttl := r.URL.Query().Get(`ttl`); ttl != `` {
+			if err := cache.SetTTL(ttl); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
+		if err := cache.Save(); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		downloader := NewDownloader(cacheUrl)
+		core.Downloaders[cacheUrl] = downloader
+		go func() {
+			defer func() {
+				<-time.After(48 * time.Hour)
+				delete(core.Downloaders, cacheUrl)
+			}()
+			response, err := downloader.Get(r)
+			if err != nil {
+				cache.Remove()
+				return
+			}
+			cache.ContentType = response.Header.Get(`Content-Type`)
+			cache.ContentDisposition = response.Header.Get(`Content-Disposition`)
+			if contentLength := response.Header.Get(`Content-Length`); contentLength != `` {
+				if n, err := strconv.ParseInt(response.Header.Get(`Content-Length`), 10, 64); err == nil {
+					downloader.ContentLength = n
+				}
+			}
+			if err := downloader.Download(cache, nil); err != nil {
+				cache.Remove()
+				return
+			}
+			cache.WriteInProgressPid = 0
+			cache.Save()
+		}()
+		w.Header().Set(`Content-Type`, `application/json`)
+		encoder := json.NewEncoder(w)
+		encoder.Encode(*downloader)
+	default:
+		downloader, found := core.Downloaders[cacheUrl]
+		if !found {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintln(w, `Download task not found`)
+			return
+		}
+		w.Header().Set(`Content-Type`, `application/json`)
+		encoder := json.NewEncoder(w)
+		encoder.Encode(*downloader)
+	}
+}
+
 func (core *Core) GetHttpHandler(w http.ResponseWriter, r *http.Request, username, cacheUrl string) {
 	if cacheUrl == `` {
 		if username == `` && core.Insecure == false {
@@ -63,65 +126,17 @@ func (core *Core) GetHttpHandler(w http.ResponseWriter, r *http.Request, usernam
 		return
 	}
 
-	cacheState := cache.State()
-
-	// Response 404 for anonymous if not insecure mode
-	if cacheState != CacheStateFound && username == `` && core.Insecure == false {
-		w.WriteHeader(http.StatusNotFound)
+	if r.URL.Query().Has(`background`) {
+		core.GetBackgroundHttpHandler(w, r, username, cacheUrl, cache)
 		return
 	}
 
-	if r.URL.Query().Has(`background`) {
-		if cacheState == CacheStateNotExist {
-			cache.Url = cacheUrl
-			cache.WriteInProgressPid = os.Getpid()
-			cache.Username = username
-			if ttl := r.URL.Query().Get(`ttl`); ttl != `` {
-				if err := cache.SetTTL(ttl); err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-			}
-			if err := cache.Save(); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			downloader := NewDownloader(cacheUrl)
-			core.Downloaders[cacheUrl] = downloader
-			go func() {
-				defer func() {
-					<-time.After(48 * time.Hour)
-					delete(core.Downloaders, cacheUrl)
-				}()
-				response, err := downloader.Get(r)
-				if err != nil {
-					cache.Remove()
-					return
-				}
-				cache.ContentType = response.Header.Get(`Content-Type`)
-				cache.ContentDisposition = response.Header.Get(`Content-Disposition`)
-				if contentLength := response.Header.Get(`Content-Length`); contentLength != `` {
-					if n, err := strconv.ParseInt(response.Header.Get(`Content-Length`), 10, 64); err == nil {
-						downloader.ContentLength = n
-					}
-				}
-				if err := downloader.Download(cache, nil); err != nil {
-					cache.Remove()
-					return
-				}
-				cache.WriteInProgressPid = 0
-				cache.Save()
-			}()
-			w.Header().Set(`Content-Type`, `application/json`)
-			encoder := json.NewEncoder(w)
-			encoder.Encode(*downloader)
+	switch cache.State() {
+	case CacheStateNotExist:
+		if username == `` && core.Insecure == false {
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		return
-	}
-
-	switch cacheState {
-	case CacheStateNotExist:
 		cache.Url = cacheUrl
 		cache.WriteInProgressPid = os.Getpid()
 		cache.Username = username
@@ -161,6 +176,10 @@ func (core *Core) GetHttpHandler(w http.ResponseWriter, r *http.Request, usernam
 		cache.WriteInProgressPid = 0
 		cache.Save()
 	case CacheStateDownloadInProgress:
+		if username == `` && core.Insecure == false {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		downloader := NewDownloader(cacheUrl)
 		response, err := downloader.Get(r)
 		if err != nil {
