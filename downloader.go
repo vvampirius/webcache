@@ -4,17 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
-	"time"
 )
 
 type Downloader struct {
-	Id            int
 	Url           string
 	State         int
-	ReadFd        io.ReadCloser
+	readFd        io.ReadCloser
 	ReceivedBytes int
+	ContentLength int64
 }
 
 func (downloader *Downloader) Get(r *http.Request) (*http.Response, error) {
@@ -43,7 +41,7 @@ func (downloader *Downloader) Get(r *http.Request) (*http.Response, error) {
 		ErrorLog.Println(err)
 		return nil, err
 	}
-	downloader.ReadFd = response.Body
+	downloader.readFd = response.Body
 	downloader.State = 2
 	return response, nil
 }
@@ -56,13 +54,13 @@ func (downloader *Downloader) Download(primaryDst, secondaryDst io.Writer) error
 	}
 	downloader.State = 3
 	defer func() {
-		downloader.ReadFd.Close()
+		downloader.readFd.Close()
 		downloader.State = 4
 	}()
 	var secondaryErr error
 	for {
 		p := make([]byte, 1024)
-		n, err := downloader.ReadFd.Read(p)
+		n, err := downloader.readFd.Read(p)
 		if n > 0 {
 			n1, err1 := primaryDst.Write(p[0:n])
 			downloader.ReceivedBytes = downloader.ReceivedBytes + n1
@@ -88,7 +86,6 @@ func (downloader *Downloader) Download(primaryDst, secondaryDst io.Writer) error
 
 func NewDownloader(url string) *Downloader {
 	downloader := Downloader{
-		Id:  rand.New(rand.NewSource(time.Now().UnixNano())).Int(),
 		Url: url,
 	}
 	return &downloader

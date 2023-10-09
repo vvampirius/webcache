@@ -1,17 +1,21 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 )
 
 type Core struct {
 	StoragePath string
 	Insecure    bool
 	Auth        *Auth
+	Downloaders map[string]*Downloader
 }
 
 // getBasicAuthUsername Get and check password from Basic_Auth
@@ -71,8 +75,57 @@ func (core *Core) MainHttpHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if r.URL.Query().Has(`background`) {
+			if cacheState == CacheStateNotExist {
+				cache.Url = cacheUrl
+				cache.WriteInProgressPid = os.Getpid()
+				cache.Username = username
+				if ttl := r.URL.Query().Get(`ttl`); ttl != `` {
+					if err := cache.SetTTL(ttl); err != nil {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+				}
+				if err := cache.Save(); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				downloader := NewDownloader(cacheUrl)
+				core.Downloaders[cacheUrl] = downloader
+				go func() {
+					defer func() {
+						<-time.After(48 * time.Hour)
+						delete(core.Downloaders, cacheUrl)
+					}()
+					response, err := downloader.Get(r)
+					if err != nil {
+						cache.Remove()
+						return
+					}
+					cache.ContentType = response.Header.Get(`Content-Type`)
+					cache.ContentDisposition = response.Header.Get(`Content-Disposition`)
+					if contentLength := response.Header.Get(`Content-Length`); contentLength != `` {
+						if n, err := strconv.ParseInt(response.Header.Get(`Content-Length`), 10, 64); err == nil {
+							downloader.ContentLength = n
+						}
+					}
+					if err := downloader.Download(cache, nil); err != nil {
+						cache.Remove()
+						return
+					}
+					cache.WriteInProgressPid = 0
+					cache.Save()
+				}()
+				w.Header().Set(`Content-Type`, `application/json`)
+				encoder := json.NewEncoder(w)
+				encoder.Encode(*downloader)
+				return
+			}
+			return
+		}
+
 		switch cacheState {
-		case 0:
+		case CacheStateNotExist:
 			cache.Url = cacheUrl
 			cache.WriteInProgressPid = os.Getpid()
 			cache.Username = username
@@ -111,7 +164,7 @@ func (core *Core) MainHttpHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			cache.WriteInProgressPid = 0
 			cache.Save()
-		case 1:
+		case CacheStateDownloadInProgress:
 			downloader := NewDownloader(cacheUrl)
 			response, err := downloader.Get(r)
 			if err != nil {
@@ -131,7 +184,7 @@ func (core *Core) MainHttpHandler(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-		case 2:
+		case CacheStateFound:
 			if contentType := cache.ContentType; contentType != `` {
 				w.Header().Set(`Content-Type`, contentType)
 			}
@@ -152,6 +205,7 @@ func NewCore(storagePath string, auth *Auth, insecure bool) *Core {
 		StoragePath: storagePath,
 		Insecure:    insecure,
 		Auth:        auth,
+		Downloaders: make(map[string]*Downloader),
 	}
 	return &core
 }

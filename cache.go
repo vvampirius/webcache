@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+const (
+	CacheStateNotExist           = 0
+	CacheStateDownloadInProgress = 1
+	CacheStateFound              = 2
+)
+
 type Cache struct {
 	filePath           string
 	metaPath           string
@@ -39,20 +45,13 @@ func (cache *Cache) WriteInProgress() bool {
 	return false
 }
 
-// State Returns state of the cache:
-//
-// 0: not exist
-//
-// 1: download in progress
-//
-// 2: downloaded
 func (cache *Cache) State() int8 {
 	if !cache.IsMetaExist() {
-		return 0
+		return CacheStateNotExist
 	} else if cache.WriteInProgress() {
-		return 1
+		return CacheStateDownloadInProgress
 	}
-	return 2
+	return CacheStateFound
 }
 
 func (cache *Cache) Load() error {

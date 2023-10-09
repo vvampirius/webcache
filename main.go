@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-const VERSION = `0.2`
+const VERSION = `0.3`
 
 var (
 	ErrorLog = log.New(os.Stderr, `error#`, log.Lshortfile)
@@ -48,7 +48,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("Starting version %s...", VERSION)
+	fmt.Printf("Starting version %s...\n", VERSION)
 
 	if err := os.MkdirAll(storagePath, 0700); err != nil {
 		ErrorLog.Fatalln(err.Error())
