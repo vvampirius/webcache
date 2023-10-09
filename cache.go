@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -150,6 +151,39 @@ func (cache *Cache) SetTTL(s string) error {
 		<-time.After(d)
 		cache.Remove()
 	}()
+	return nil
+}
+
+func (cache *Cache) Rewrite(r io.Reader) error {
+	if cache.WriteInProgress() {
+		ErrorLog.Println(cache.Url, `Write in progress`)
+		return errors.New(`Write in progress`)
+	}
+	if err := cache.Close(); err != nil {
+		ErrorLog.Println(cache.Url, err.Error())
+		return err
+	}
+	cache.WriteInProgressPid = os.Getpid()
+	if err := cache.Save(); err != nil {
+		ErrorLog.Println(cache.Url, err.Error())
+		return err
+	}
+	f, err := os.OpenFile(cache.filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	cache.writeFd = f
+	if _, err := io.Copy(cache, r); err != nil {
+		ErrorLog.Println(cache.Url, err.Error())
+		cache.Remove()
+		return err
+	}
+	cache.WriteInProgressPid = 0
+	if err := cache.Save(); err != nil {
+		ErrorLog.Println(cache.Url, err.Error())
+		return err
+	}
 	return nil
 }
 
